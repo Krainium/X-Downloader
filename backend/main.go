@@ -651,6 +651,52 @@ func handleDownload(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.Copy(w, res.Body)
 }
 
+// handleMedia proxies media for inline playback. The video CDN answers 403
+// unless the request carries an x.com referer, which a browser loading the url
+// directly cannot send, so the <video> element points here instead of at the
+// CDN. Range headers are forwarded both ways so seeking still works.
+func handleMedia(w http.ResponseWriter, r *http.Request) {
+	target := r.URL.Query().Get("url")
+	if target == "" {
+		writeJSON(w, 400, map[string]string{"error": "url is required"})
+		return
+	}
+	u, err := url.Parse(target)
+	if err != nil || !allowedMediaHost(u.Hostname()) {
+		writeJSON(w, 403, map[string]string{"error": "only X media hosts are allowed"})
+		return
+	}
+
+	if isPlaylist(target) {
+		streamHLS(w, target, "preview.mp4")
+		return
+	}
+
+	req, _ := http.NewRequest("GET", target, nil)
+	req.Header.Set("User-Agent", browserUA)
+	req.Header.Set("Referer", "https://x.com/")
+	req.Header.Set("Accept", "*/*")
+	if rng := r.Header.Get("Range"); rng != "" {
+		req.Header.Set("Range", rng)
+	}
+
+	res, err := client.Do(req)
+	if err != nil {
+		writeJSON(w, 502, map[string]string{"error": "could not fetch media"})
+		return
+	}
+	defer res.Body.Close()
+
+	for _, h := range []string{"Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"} {
+		if v := res.Header.Get(h); v != "" {
+			w.Header().Set(h, v)
+		}
+	}
+	w.Header().Set("Cache-Control", "private, max-age=600")
+	w.WriteHeader(res.StatusCode)
+	_, _ = io.Copy(w, res.Body)
+}
+
 // ─── static frontend ─────────────────────────────────────────────────────────
 
 func staticHandler(dir string) http.Handler {
@@ -690,6 +736,7 @@ func main() {
 	mux.HandleFunc("/api/health", handleHealth)
 	mux.HandleFunc("/api/extract", handleExtract)
 	mux.HandleFunc("/api/download", handleDownload)
+	mux.HandleFunc("/api/media", handleMedia)
 	mux.Handle("/", staticHandler(dist))
 
 	srv := &http.Server{
