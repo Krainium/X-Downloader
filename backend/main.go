@@ -31,6 +31,11 @@ const (
 
 var tweetID = regexp.MustCompile(`(?:status(?:es)?)/(\d{10,25})`)
 
+// Lines of an HLS master playlist that describe a rendition.
+var hlsResolution = regexp.MustCompile(`RESOLUTION=(\d+)x(\d+)`)
+var hlsBandwidth = regexp.MustCompile(`BANDWIDTH=(\d+)`)
+var hlsMapURI = regexp.MustCompile(`URI="([^"]+)"`)
+
 // Rendition size as it appears in a video CDN path, for example /1280x720/.
 var sizeInPath = regexp.MustCompile(`/([0-9]{2,4})x([0-9]{2,4})/`)
 
@@ -58,6 +63,9 @@ type Variant struct {
 	Height   int    `json:"height"`  //
 	Bitrate  int    `json:"bitrate"` //
 	Filename string `json:"filename"`
+	// True when this rendition only exists as an HLS stream. It is stitched
+	// back into one file on download, so callers treat it like any other.
+	HLS bool `json:"hls,omitempty"`
 }
 
 type Post struct {
@@ -281,6 +289,57 @@ func extract(rawURL string) (*Post, error) {
 					Filename: fmt.Sprintf("%s_%d_%s.mp4", base, i+1, label),
 				})
 			}
+			// X occasionally publishes a size over HLS with no progressive mp4
+			// behind it. Add only what the mp4 list is missing.
+			var masterURL string
+			for _, v := range vs {
+				if strings.Contains(v.ContentType, "mpegURL") {
+					masterURL = v.URL
+					break
+				}
+			}
+			if masterURL != "" {
+				have := map[string]bool{}
+				for _, v := range variants {
+					have[v.Label] = true
+				}
+				for _, r := range parseMaster(masterURL) {
+					short := r.Height
+					if r.Width < r.Height {
+						short = r.Width
+					}
+					label := fmt.Sprintf("%dp", short)
+					if have[label] {
+						continue
+					}
+					have[label] = true
+					variants = append(variants, Variant{
+						URL:      r.URL,
+						Label:    label,
+						Width:    r.Width,
+						Height:   r.Height,
+						Bitrate:  r.Bandwidth,
+						Filename: fmt.Sprintf("%s_%d_%s.mp4", base, i+1, label),
+						HLS:      true,
+					})
+				}
+				// Keep the list ordered best first after the merge.
+				sort.Slice(variants, func(a, b int) bool {
+					sa := variants[a].Width
+					if variants[a].Height < sa {
+						sa = variants[a].Height
+					}
+					sb := variants[b].Width
+					if variants[b].Height < sb {
+						sb = variants[b].Height
+					}
+					if sa != sb {
+						return sa > sb
+					}
+					return variants[a].Bitrate > variants[b].Bitrate
+				})
+			}
+
 			if len(variants) > 0 {
 				best := variants[0]
 				post.Media = append(post.Media, Media{
@@ -321,6 +380,180 @@ func extract(rawURL string) (*Post, error) {
 		return nil, errors.New("this post has no downloadable video or image")
 	}
 	return post, nil
+}
+
+// ─── hls ─────────────────────────────────────────────────────────────────────
+
+type hlsRendition struct {
+	URL       string
+	Width     int
+	Height    int
+	Bandwidth int
+}
+
+func isPlaylist(u string) bool {
+	if p, err := url.Parse(u); err == nil {
+		return strings.HasSuffix(strings.ToLower(p.Path), ".m3u8")
+	}
+	return false
+}
+
+// fetchText pulls a small text document such as a playlist.
+func fetchText(target string) (string, error) {
+	req, _ := http.NewRequest("GET", target, nil)
+	req.Header.Set("User-Agent", browserUA)
+	req.Header.Set("Referer", "https://x.com/")
+	res, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer res.Body.Close()
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		return "", fmt.Errorf("playlist returned %d", res.StatusCode)
+	}
+	b, err := io.ReadAll(io.LimitReader(res.Body, 2<<20))
+	return string(b), err
+}
+
+// resolveRef turns a playlist reference, which may be relative, into an absolute url.
+func resolveRef(base, ref string) string {
+	b, err := url.Parse(base)
+	if err != nil {
+		return ref
+	}
+	r, err := url.Parse(strings.TrimSpace(ref))
+	if err != nil {
+		return ref
+	}
+	return b.ResolveReference(r).String()
+}
+
+// parseMaster reads an HLS master playlist and returns the renditions it lists.
+// X sometimes publishes a size through HLS that has no matching progressive mp4.
+func parseMaster(masterURL string) []hlsRendition {
+	body, err := fetchText(masterURL)
+	if err != nil {
+		return nil
+	}
+	var out []hlsRendition
+	lines := strings.Split(body, "\n")
+	for i, line := range lines {
+		if !strings.HasPrefix(line, "#EXT-X-STREAM-INF") {
+			continue
+		}
+		var r hlsRendition
+		if m := hlsResolution.FindStringSubmatch(line); m != nil {
+			r.Width, _ = strconv.Atoi(m[1])
+			r.Height, _ = strconv.Atoi(m[2])
+		}
+		if m := hlsBandwidth.FindStringSubmatch(line); m != nil {
+			r.Bandwidth, _ = strconv.Atoi(m[1])
+		}
+		// The URI is the next line that is not a comment.
+		for j := i + 1; j < len(lines); j++ {
+			ref := strings.TrimSpace(lines[j])
+			if ref == "" || strings.HasPrefix(ref, "#") {
+				continue
+			}
+			r.URL = resolveRef(masterURL, ref)
+			break
+		}
+		if r.URL != "" && r.Width > 0 {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// streamHLS stitches a media playlist back into one continuous file. Segments
+// are fMP4, so writing the init segment followed by each media segment in order
+// produces something a player can open without any remuxing.
+func streamHLS(w http.ResponseWriter, playlistURL, name string) {
+	body, err := fetchText(playlistURL)
+	if err != nil {
+		writeJSON(w, 502, map[string]string{"error": "could not read playlist: " + err.Error()})
+		return
+	}
+
+	// If a master playlist lands here, step down to its best rendition once
+	// rather than concatenating playlist text as though it were video.
+	if strings.Contains(body, "#EXT-X-STREAM-INF") {
+		best := ""
+		bestShort := -1
+		for _, r := range parseMaster(playlistURL) {
+			short := r.Height
+			if r.Width < r.Height {
+				short = r.Width
+			}
+			if short > bestShort {
+				bestShort, best = short, r.URL
+			}
+		}
+		if best == "" {
+			writeJSON(w, 502, map[string]string{"error": "playlist had no renditions"})
+			return
+		}
+		body, err = fetchText(best)
+		if err != nil {
+			writeJSON(w, 502, map[string]string{"error": "could not read rendition: " + err.Error()})
+			return
+		}
+		playlistURL = best
+	}
+
+	var parts []string
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "#EXT-X-MAP") {
+			if m := hlsMapURI.FindStringSubmatch(line); m != nil {
+				parts = append(parts, resolveRef(playlistURL, m[1])) // init first
+			}
+			continue
+		}
+		if strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts = append(parts, resolveRef(playlistURL, line))
+	}
+	if len(parts) == 0 {
+		writeJSON(w, 502, map[string]string{"error": "playlist had no segments"})
+		return
+	}
+
+	w.Header().Set("Content-Type", "video/mp4")
+	w.Header().Set("Content-Disposition",
+		fmt.Sprintf("attachment; filename*=UTF-8''%s", url.PathEscape(safeName(name))))
+	w.Header().Set("Cache-Control", "no-store")
+	// Length is unknown up front, so the response is streamed as it is built.
+
+	for _, seg := range parts {
+		u, err := url.Parse(seg)
+		if err != nil || !allowedMediaHost(u.Hostname()) {
+			return // refuse to follow a playlist off X's own hosts
+		}
+		req, _ := http.NewRequest("GET", seg, nil)
+		req.Header.Set("User-Agent", browserUA)
+		req.Header.Set("Referer", "https://x.com/")
+		res, err := client.Do(req)
+		if err != nil {
+			return // client already has bytes; nothing useful left to say
+		}
+		if res.StatusCode < 200 || res.StatusCode >= 300 {
+			res.Body.Close()
+			return
+		}
+		if _, err := io.Copy(w, res.Body); err != nil {
+			res.Body.Close()
+			return
+		}
+		res.Body.Close()
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+	}
 }
 
 // ─── handlers ────────────────────────────────────────────────────────────────
@@ -382,6 +615,11 @@ func handleDownload(w http.ResponseWriter, r *http.Request) {
 	}
 	if name == "" {
 		name = "x-download"
+	}
+
+	if isPlaylist(target) {
+		streamHLS(w, target, name)
+		return
 	}
 
 	req, _ := http.NewRequest("GET", target, nil)
