@@ -1,0 +1,12 @@
+{
+  "framework": null,
+  "services": {
+    "web": {
+      "root": ".",
+      "entrypoint": "Dockerfile.vercel"
+    }
+  },
+  "rewrites": [
+    { "source": "/(.*)", "destination": { "service": "web" } }
+  ]
+}
