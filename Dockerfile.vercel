@@ -1,0 +1,30 @@
+# Vercel container image.
+#
+# The frontend is built with Node and the server with Go, then both are copied
+# into a small runtime layer. The Go binary serves the API and the static build
+# from a single port, so there is nothing else to wire up.
+
+FROM node:20-alpine AS web
+WORKDIR /web
+COPY frontend/package.json frontend/package-lock.json* ./
+RUN npm ci --no-audit --no-fund
+COPY frontend/ ./
+RUN npm run build
+
+FROM golang:1.22-alpine AS api
+WORKDIR /api
+COPY backend/go.mod ./
+COPY backend/ ./
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /xdl .
+
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates
+WORKDIR /app
+COPY --from=api /xdl /app/xdl
+COPY --from=web /web/dist /app/public
+
+ENV PORT=80
+ENV XDL_DIST=/app/public
+EXPOSE 80
+
+CMD ["/app/xdl"]
