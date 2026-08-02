@@ -261,9 +261,16 @@ func extract(rawURL string) (*Post, error) {
 					w, _ = strconv.Atoi(m[1])
 					h, _ = strconv.Atoi(m[2])
 				}
+				// Quality follows the short side, not the height. A vertical
+				// 1080x1920 clip is 1080p, and labelling it by height would
+				// call it 1920p.
 				label := fmt.Sprintf("%d kbps", v.Bitrate/1000)
-				if h > 0 {
-					label = fmt.Sprintf("%dp", h)
+				if w > 0 && h > 0 {
+					short := h
+					if w < h {
+						short = w
+					}
+					label = fmt.Sprintf("%dp", short)
 				}
 				variants = append(variants, Variant{
 					URL:      v.URL,
