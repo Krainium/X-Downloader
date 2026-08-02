@@ -406,7 +406,16 @@ main { max-width: var(--wrap); margin: 0 auto; padding: 0 20px; }
   background: var(--panel-soft); border: 1px solid var(--line);
   transition: color 0.14s, border-color 0.14s, background 0.14s;
 }
-.q span { font-size: 10.5px; font-weight: 500; opacity: 0.62; }
+.q-res { font-size: 13.5px; font-weight: 600; }
+/* A rule between the two lines so the resolution and the rate stay distinct,
+   including for anything reading the labels as plain text. */
+.q-rate {
+  font-size: 10.5px; font-weight: 500; opacity: 0.62;
+  margin-top: 3px; padding-top: 3px;
+  border-top: 1px solid rgba(255, 255, 255, 0.14);
+  width: 100%; text-align: center;
+}
+.q.on .q-rate { border-top-color: rgba(127, 176, 255, 0.4); }
 .q:hover { color: var(--ink); background: rgba(255,255,255,0.09); }
 .q.on {
   color: var(--ink); border-color: rgba(127,176,255,0.75);

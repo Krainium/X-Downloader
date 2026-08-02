@@ -272,8 +272,8 @@ export default function App() {
                           className={`q ${i === quality ? "on" : ""}`}
                           onClick={() => setQuality(i)}
                         >
-                          {v.label}
-                          <span>{bitrateLabel(v.bitrate)}</span>
+                          <span className="q-res">{v.label}</span>
+                          <span className="q-rate">{bitrateLabel(v.bitrate)}</span>
                         </button>
                       ))}
                     </div>
