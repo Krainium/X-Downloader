@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import SnowBubbles from "./components/SnowBubbles";
 import GlassX from "./components/GlassX";
 import Splash from "./components/Splash";
-import { bitrateLabel, downloadHref, type Media, type Post, type Variant } from "./types";
+import { bitrateLabel, downloadHref, previewSrc, type Media, type Post, type Variant } from "./types";
 
 const X_LINK = /(?:twitter\.com|x\.com)\/[^/]+\/status(?:es)?\/(\d{10,25})/i;
 
@@ -234,7 +234,7 @@ export default function App() {
                   ) : (
                     <video
                       className="media"
-                      src={chosen.url}
+                      src={previewSrc(chosen)}
                       poster={current.thumb}
                       controls
                       playsInline

@@ -31,6 +31,14 @@ export interface Post {
   media: Media[];
 }
 
+/**
+ * Inline playback url. The video CDN rejects browser requests that do not carry
+ * an x.com referer, so previews go through the server rather than straight to
+ * the CDN. Images are unaffected and can be loaded directly.
+ */
+export const previewSrc = (m: Media | Variant): string =>
+  `/api/media?url=${encodeURIComponent(m.url)}`;
+
 /** Build a download link for a media item, or for one of its quality variants. */
 export const downloadHref = (m: Media | Variant): string =>
   `/api/download?url=${encodeURIComponent(m.url)}&filename=${encodeURIComponent(m.filename)}`;
