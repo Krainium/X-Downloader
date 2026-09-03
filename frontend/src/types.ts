@@ -1,3 +1,5 @@
+export const API_BASE = import.meta.env.VITE_API_BASE ?? "";
+
 export interface Variant {
   url: string;
   label: string;
@@ -37,11 +39,11 @@ export interface Post {
  * the CDN. Images are unaffected and can be loaded directly.
  */
 export const previewSrc = (m: Media | Variant): string =>
-  `/api/media?url=${encodeURIComponent(m.url)}`;
+  `${API_BASE}/api/media?url=${encodeURIComponent(m.url)}`;
 
 /** Build a download link for a media item, or for one of its quality variants. */
 export const downloadHref = (m: Media | Variant): string =>
-  `/api/download?url=${encodeURIComponent(m.url)}&filename=${encodeURIComponent(m.filename)}`;
+  `${API_BASE}/api/download?url=${encodeURIComponent(m.url)}&filename=${encodeURIComponent(m.filename)}`;
 
 export function humanSize(bytes: number): string {
   if (!bytes) return "";
