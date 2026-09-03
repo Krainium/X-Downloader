@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import SnowBubbles from "./components/SnowBubbles";
 import GlassX from "./components/GlassX";
 import Splash from "./components/Splash";
-import { bitrateLabel, downloadHref, previewSrc, type Media, type Post, type Variant } from "./types";
+import { API_BASE, bitrateLabel, downloadHref, previewSrc, type Media, type Post, type Variant } from "./types";
 
 const X_LINK = /(?:twitter\.com|x\.com)\/[^/]+\/status(?:es)?\/(\d{10,25})/i;
 
@@ -55,7 +55,7 @@ export default function App() {
     setPost(null);
 
     try {
-      const res = await fetch(`/api/extract?url=${encodeURIComponent(value)}`);
+      const res = await fetch(`${API_BASE}/api/extract?url=${encodeURIComponent(value)}`);
       const data = await res.json();
       if (seq !== requestSeq.current) return; // superseded
       if (!res.ok) {
